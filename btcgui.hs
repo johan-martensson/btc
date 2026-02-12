@@ -401,6 +401,7 @@ generateHtml curUsd curEur curGbp curVol entries =
   ++ "<button class='preset range-btn' onclick='setPreset(1,this)'>1D</button>"
   ++ "<button class='preset range-btn' onclick='setPreset(7,this)'>1W</button>"
   ++ "<button class='preset range-btn' onclick='setPreset(30,this)'>1M</button>"
+  ++ "<button class='preset range-btn active' id='btn3m' onclick='setPreset(90,this)'>3M</button>"
   ++ "<button class='preset range-btn' onclick='setPreset(365,this)'>1Y</button>"
   ++ "<button class='preset range-btn' onclick='setPreset(0,this)'>All</button>"
   ++ "<span class='preset-sep'></span>"
