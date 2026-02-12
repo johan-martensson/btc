@@ -73,6 +73,9 @@ Generates an interactive HTML dashboard and opens it in your browser. Features:
 - Preset range buttons: **1D**, **1W**, **1M**, **1Y**, **All**
 - Interactive date range picker — change the period and click **Fetch** to reload data live from the browser
 - Line chart with hover tooltips (Chart.js) and **volume bars** on secondary Y-axis
+- **Bitcoin Power Law** overlay — support, fair value, and resistance corridor lines
+- **Log Scale** toggle (Y-axis logarithmic)
+- **Log-Log** chart mode — days since genesis on X-axis (log) vs. price (log), where the power law appears as straight lines
 - Period statistics (high, low, average, change %, avg daily volume, total volume)
 - Scrollable daily price table with volume and color-coded changes
 - Dark theme
