@@ -2,7 +2,7 @@
 
 Bitcoin price tracker written in Haskell. Includes a CLI tool and a browser-based GUI dashboard.
 
-Uses the [CoinGecko](https://www.coingecko.com/) free API (no API key required, limited to last 365 days of history).
+Uses the [CoinGecko](https://www.coingecko.com/) free API with automatic fallback to [Binance](https://www.binance.com/) public API. No API keys required.
 
 ## Building
 
@@ -69,3 +69,11 @@ Generates an interactive HTML dashboard and opens it in your browser. Features:
 - Period statistics (high, low, average, change %)
 - Scrollable daily price table with color-coded changes
 - Dark theme
+
+## Data Sources
+
+Both tools try [CoinGecko](https://www.coingecko.com/en/api) first. If it fails (rate limit, timeout, or error), they automatically fall back to [Binance](https://developers.binance.com/docs/binance-spot-api-docs/rest-api) public endpoints. This applies to:
+
+- Current price fetching (CLI and GUI startup)
+- Historical data fetching (CLI and GUI startup)
+- Live date range updates in the GUI (client-side JavaScript)
