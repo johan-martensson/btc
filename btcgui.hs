@@ -57,26 +57,114 @@ type DailyEntry = (Day, Double)
 
 fetchCurrentPrice :: IO (Maybe (String, String, String))
 fetchCurrentPrice = do
+  result <- fetchCurrentCoinGecko
+  case result of
+    Just x  -> return (Just x)
+    Nothing -> fetchCurrentBinance
+
+fetchCurrentCoinGecko :: IO (Maybe (String, String, String))
+fetchCurrentCoinGecko = do
   response <- readCommand
-    "curl -s 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur,gbp'"
+    "curl -s --max-time 5 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur,gbp'"
   return $ do
     usd <- extractJsonValue "usd" response
     eur <- extractJsonValue "eur" response
     gbp <- extractJsonValue "gbp" response
     Just (usd, eur, gbp)
 
+fetchCurrentBinance :: IO (Maybe (String, String, String))
+fetchCurrentBinance = do
+  rUsd <- readCommand "curl -s --max-time 5 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'"
+  rEur <- readCommand "curl -s --max-time 5 'https://api.binance.com/api/v3/ticker/price?symbol=BTCEUR'"
+  rGbp <- readCommand "curl -s --max-time 5 'https://api.binance.com/api/v3/ticker/price?symbol=BTCGBP'"
+  return $ do
+    usd <- extractQuotedValue "price" rUsd
+    eur <- extractQuotedValue "price" rEur
+    gbp <- extractQuotedValue "price" rGbp
+    Just (trimZeros usd, trimZeros eur, trimZeros gbp)
+
 fetchHistoricalPrices :: Day -> Day -> IO (Either String [DailyEntry])
 fetchHistoricalPrices fromDay toDay = do
+  result <- fetchHistCoinGecko fromDay toDay
+  case result of
+    Just entries -> return $ Right entries
+    Nothing -> do
+      result2 <- fetchHistBinance fromDay toDay
+      case result2 of
+        Just entries -> return $ Right entries
+        Nothing      -> return $ Left "Could not fetch data from any source"
+
+fetchHistCoinGecko :: Day -> Day -> IO (Maybe [DailyEntry])
+fetchHistCoinGecko fromDay toDay = do
   let fromEpoch = dayToEpoch fromDay
       toEpoch   = dayToEpoch toDay + 86400
-      url = "curl -s 'https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range"
+      url = "curl -s --max-time 10 'https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range"
             ++ "?vs_currency=usd&from=" ++ show fromEpoch
             ++ "&to=" ++ show toEpoch ++ "'"
   response <- readCommand url
   case parsePriceArray response of
-    Nothing -> return $ Left ("Could not parse API response: " ++ take 200 response)
-    Just [] -> return $ Left "No price data returned for this range."
-    Just entries -> return $ Right (downsampleDaily entries)
+    Just entries@(_:_) -> return $ Just (downsampleDaily entries)
+    _                  -> return Nothing
+
+fetchHistBinance :: Day -> Day -> IO (Maybe [DailyEntry])
+fetchHistBinance fromDay toDay = do
+  let fromMs = dayToEpoch fromDay * 1000
+      toMs   = (dayToEpoch toDay + 86400) * 1000
+      url = "curl -s --max-time 10 'https://api.binance.com/api/v3/klines"
+            ++ "?symbol=BTCUSDT&interval=1d&startTime=" ++ show fromMs
+            ++ "&endTime=" ++ show toMs ++ "&limit=1000'"
+  response <- readCommand url
+  case parseBinanceKlines response of
+    [] -> return Nothing
+    entries -> return $ Just entries
+
+parseBinanceKlines :: String -> [DailyEntry]
+parseBinanceKlines s = case dropWhile (/= '[') s of
+  '[':'[':rest -> parseKline rest
+  _            -> []
+  where
+    parseKline r =
+      case reads r :: [(Double, String)] of
+        [(ts, r1)] ->
+          case skipQ (dropC r1) of
+            Just r2 -> case skipQ (dropC r2) of
+              Just r3 -> case skipQ (dropC r3) of
+                Just r4 -> case readQ (dropC r4) of
+                  Just (closeStr, _) ->
+                    case readMaybe' closeStr of
+                      Just price ->
+                        let day = utctDay (msToUTC ts)
+                        in  (day, price) : parseKline (skipNext r)
+                      _ -> parseKline (skipNext r)
+                  _ -> parseKline (skipNext r)
+                _ -> parseKline (skipNext r)
+              _ -> parseKline (skipNext r)
+            _ -> parseKline (skipNext r)
+        _ -> []
+    dropC = drop 1 . dropWhile (/= ',')
+    skipQ str = case dropWhile (/= '"') str of
+      '"':rest -> Just (drop 1 (dropWhile (/= '"') rest))
+      _        -> Nothing
+    readQ str = case dropWhile (/= '"') str of
+      '"':rest -> let (v, rest2) = span (/= '"') rest in Just (v, drop 1 rest2)
+      _        -> Nothing
+    skipNext str = case dropWhile (/= '[') str of
+      '[':rest -> rest
+      _        -> ""
+
+extractQuotedValue :: String -> String -> Maybe String
+extractQuotedValue _   [] = Nothing
+extractQuotedValue key json
+  | needle `isPrefixOf` json =
+      let rest = drop (length needle) json
+      in  Just (takeWhile (/= '"') rest)
+  | otherwise = extractQuotedValue key (drop 1 json)
+  where needle = "\"" ++ key ++ "\":\""
+
+trimZeros :: String -> String
+trimZeros s
+  | '.' `elem` s = reverse . dropWhile (== '.') . dropWhile (== '0') . reverse $ s
+  | otherwise     = s
 
 -------------------------------------------------------------------------------
 -- JSON parsing
@@ -338,6 +426,23 @@ generateHtml curUsd curEur curGbp entries =
   ++ "if(!byDay[d])byDay[d]=p[1];});"
   ++ "return Object.keys(byDay).sort().map(function(d){return [d,byDay[d]]});}"
 
+  ++ "function showDaily(daily){"
+  ++ "renderChart(daily.map(function(d){return d[0]}),daily.map(function(d){return d[1]}));"
+  ++ "updateStats(daily);updateTable(daily);}"
+
+  ++ "function fetchBinance(fromMs,toMs){"
+  ++ "document.getElementById('status').textContent='CoinGecko failed, trying Binance...';"
+  ++ "fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&startTime='+fromMs+'&endTime='+toMs+'&limit=1000')"
+  ++ ".then(function(r){return r.json()})"
+  ++ ".then(function(klines){"
+  ++ "if(!Array.isArray(klines)||klines.length===0){"
+  ++ "document.getElementById('status').textContent='No data from Binance either';return;}"
+  ++ "var daily=klines.map(function(k){"
+  ++ "return [new Date(k[0]).toISOString().slice(0,10),parseFloat(k[4])]});"
+  ++ "showDaily(daily);document.getElementById('status').textContent='(via Binance)';})"
+  ++ ".catch(function(e){document.getElementById('status').textContent='Both APIs failed: '+e;})"
+  ++ ".finally(function(){document.getElementById('fetchBtn').disabled=false;});}"
+
   ++ "function fetchRange(){"
   ++ "var f=document.getElementById('fromDate').value;"
   ++ "var t=document.getElementById('toDate').value;"
@@ -347,18 +452,17 @@ generateHtml curUsd curEur curGbp entries =
   ++ "if(from>=to){document.getElementById('status').textContent='From must be before To';return;}"
   ++ "document.getElementById('status').textContent='Fetching...';"
   ++ "document.getElementById('fetchBtn').disabled=true;"
+  ++ "var fromMs=from*1000,toMs=to*1000;"
   ++ "fetch('https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range"
   ++ "?vs_currency=usd&from='+from+'&to='+to)"
-  ++ ".then(function(r){return r.json()})"
+  ++ ".then(function(r){if(!r.ok)throw new Error(r.status);return r.json()})"
   ++ ".then(function(j){"
-  ++ "if(j.error){document.getElementById('status').textContent=j.error.status.error_message;return;}"
+  ++ "if(j.error){fetchBinance(fromMs,toMs);return;}"
   ++ "var daily=downsample(j.prices);"
-  ++ "if(daily.length===0){document.getElementById('status').textContent='No data returned';return;}"
-  ++ "renderChart(daily.map(function(d){return d[0]}),daily.map(function(d){return d[1]}));"
-  ++ "updateStats(daily);updateTable(daily);"
-  ++ "document.getElementById('status').textContent='';})"
-  ++ ".catch(function(e){document.getElementById('status').textContent='Error: '+e;})"
-  ++ ".finally(function(){document.getElementById('fetchBtn').disabled=false;});}"
+  ++ "if(daily.length===0){fetchBinance(fromMs,toMs);return;}"
+  ++ "showDaily(daily);document.getElementById('status').textContent='';"
+  ++ "document.getElementById('fetchBtn').disabled=false;})"
+  ++ ".catch(function(e){fetchBinance(fromMs,toMs);});}"
 
   -- Render initial chart with Haskell-provided data
   ++ "renderChart(" ++ labelsJs ++ "," ++ pricesJs ++ ");"
