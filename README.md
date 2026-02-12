@@ -9,8 +9,14 @@ Uses the [CoinGecko](https://www.coingecko.com/) free API (no API key required, 
 Requires GHC with the `time` library (included in standard GHC installations).
 
 ```bash
-ghc -o btcprice btcprice.hs
-ghc -o btcgui btcgui.hs
+make
+```
+
+Or individually:
+
+```bash
+ghc -O2 -o btcprice btcprice.hs
+ghc -O2 -o btcgui btcgui.hs
 ```
 
 ## Usage
@@ -55,9 +61,11 @@ Date        Price (USD)     Change
 ./btcgui 2025-10-01 2026-01-01
 ```
 
-Generates an interactive HTML dashboard and opens it in your browser. Includes:
+Generates an interactive HTML dashboard and opens it in your browser. Features:
 
 - Current price (USD, EUR, GBP)
-- Interactive price chart (Chart.js)
-- Period statistics (high, low, average, change)
-- Daily price table with color-coded changes
+- Interactive date range picker — change the period and click **Fetch** to reload data live from the browser
+- Line chart with hover tooltips (Chart.js)
+- Period statistics (high, low, average, change %)
+- Scrollable daily price table with color-coded changes
+- Dark theme
