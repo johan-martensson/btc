@@ -77,3 +77,5 @@ Both tools try [CoinGecko](https://www.coingecko.com/en/api) first. If it fails 
 - Current price fetching (CLI and GUI startup)
 - Historical data fetching (CLI and GUI startup)
 - Live date range updates in the GUI (client-side JavaScript)
+
+CoinGecko's free tier is limited to the last 365 days. The Binance fallback has no such limit — long ranges are fetched automatically via pagination (1000-day chunks).
