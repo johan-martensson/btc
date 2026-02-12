@@ -60,7 +60,7 @@ usage = unlines
   , "  btcprice FROM TO                  Daily price stats for date range"
   , ""
   , "  Dates must be YYYY-MM-DD, e.g.:   btcprice 2025-08-01 2025-10-15"
-  , "  Free API limited to last 365 days."
+  , "  CoinGecko limited to last 365 days; falls back to Binance for longer ranges."
   ]
 
 -------------------------------------------------------------------------------
@@ -141,19 +141,33 @@ fetchHistoricalCoinGecko fromDay toDay = do
     _                  -> return Nothing
 
 -- Binance klines: [[openTime,"open","high","low","close",...], ...]
--- We use close price (index 4). Max 1000 candles per request.
+-- We use close price (index 4). Paginates in 1000-day chunks.
 fetchHistoricalBinance :: Day -> Day -> IO (Maybe [DailyEntry])
 fetchHistoricalBinance fromDay toDay = do
-  let fromMs = dayToEpoch fromDay * 1000
-      toMs   = (dayToEpoch toDay + 86400) * 1000
-      url = "curl -s --max-time 10 'https://api.binance.com/api/v3/klines"
-            ++ "?symbol=BTCUSDT&interval=1d&startTime=" ++ show fromMs
-            ++ "&endTime=" ++ show toMs ++ "&limit=1000'"
-  response <- readCommand url
-  let entries = parseBinanceKlines response
+  entries <- fetchBinanceChunks (dayToEpoch fromDay * 1000) ((dayToEpoch toDay + 86400) * 1000)
   case entries of
     [] -> return Nothing
     _  -> return $ Just entries
+
+fetchBinanceChunks :: Integer -> Integer -> IO [DailyEntry]
+fetchBinanceChunks fromMs toMs
+  | fromMs >= toMs = return []
+  | otherwise = do
+      let url = "curl -s --max-time 10 'https://api.binance.com/api/v3/klines"
+                ++ "?symbol=BTCUSDT&interval=1d&startTime=" ++ show fromMs
+                ++ "&endTime=" ++ show toMs ++ "&limit=1000'"
+      response <- readCommand url
+      let entries = parseBinanceKlines response
+      case entries of
+        [] -> return []
+        _  -> do
+          let lastDay   = fst (last entries)
+              nextFromMs = (dayToEpoch lastDay + 86400) * 1000
+          if nextFromMs >= toMs || length entries < 1000
+            then return entries
+            else do
+              rest <- fetchBinanceChunks nextFromMs toMs
+              return (entries ++ rest)
 
 -- Parse Binance kline array: [[ts,"o","h","l","c",...], ...]
 parseBinanceKlines :: String -> [DailyEntry]

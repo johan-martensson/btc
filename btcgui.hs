@@ -108,15 +108,30 @@ fetchHistCoinGecko fromDay toDay = do
 
 fetchHistBinance :: Day -> Day -> IO (Maybe [DailyEntry])
 fetchHistBinance fromDay toDay = do
-  let fromMs = dayToEpoch fromDay * 1000
-      toMs   = (dayToEpoch toDay + 86400) * 1000
-      url = "curl -s --max-time 10 'https://api.binance.com/api/v3/klines"
-            ++ "?symbol=BTCUSDT&interval=1d&startTime=" ++ show fromMs
-            ++ "&endTime=" ++ show toMs ++ "&limit=1000'"
-  response <- readCommand url
-  case parseBinanceKlines response of
+  entries <- fetchBinChunks (dayToEpoch fromDay * 1000) ((dayToEpoch toDay + 86400) * 1000)
+  case entries of
     [] -> return Nothing
-    entries -> return $ Just entries
+    _  -> return $ Just entries
+
+fetchBinChunks :: Integer -> Integer -> IO [DailyEntry]
+fetchBinChunks fromMs toMs
+  | fromMs >= toMs = return []
+  | otherwise = do
+      let url = "curl -s --max-time 10 'https://api.binance.com/api/v3/klines"
+                ++ "?symbol=BTCUSDT&interval=1d&startTime=" ++ show fromMs
+                ++ "&endTime=" ++ show toMs ++ "&limit=1000'"
+      response <- readCommand url
+      let entries = parseBinanceKlines response
+      case entries of
+        [] -> return []
+        _  -> do
+          let lastDay    = fst (last entries)
+              nextFromMs = (dayToEpoch lastDay + 86400) * 1000
+          if nextFromMs >= toMs || length entries < 1000
+            then return entries
+            else do
+              rest <- fetchBinChunks nextFromMs toMs
+              return (entries ++ rest)
 
 parseBinanceKlines :: String -> [DailyEntry]
 parseBinanceKlines s = case dropWhile (/= '[') s of
@@ -430,18 +445,32 @@ generateHtml curUsd curEur curGbp entries =
   ++ "renderChart(daily.map(function(d){return d[0]}),daily.map(function(d){return d[1]}));"
   ++ "updateStats(daily);updateTable(daily);}"
 
-  ++ "function fetchBinance(fromMs,toMs){"
-  ++ "document.getElementById('status').textContent='CoinGecko failed, trying Binance...';"
+  ++ "function fetchBinanceChunks(fromMs,toMs,acc){"
+  ++ "if(fromMs>=toMs){if(acc.length===0){document.getElementById('status').textContent='No data from Binance either';"
+  ++ "document.getElementById('fetchBtn').disabled=false;return;}"
+  ++ "showDaily(acc);document.getElementById('status').textContent='(via Binance)';"
+  ++ "document.getElementById('fetchBtn').disabled=false;return;}"
   ++ "fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&startTime='+fromMs+'&endTime='+toMs+'&limit=1000')"
   ++ ".then(function(r){return r.json()})"
   ++ ".then(function(klines){"
   ++ "if(!Array.isArray(klines)||klines.length===0){"
-  ++ "document.getElementById('status').textContent='No data from Binance either';return;}"
-  ++ "var daily=klines.map(function(k){"
-  ++ "return [new Date(k[0]).toISOString().slice(0,10),parseFloat(k[4])]});"
-  ++ "showDaily(daily);document.getElementById('status').textContent='(via Binance)';})"
-  ++ ".catch(function(e){document.getElementById('status').textContent='Both APIs failed: '+e;})"
-  ++ ".finally(function(){document.getElementById('fetchBtn').disabled=false;});}"
+  ++ "if(acc.length===0){document.getElementById('status').textContent='No data from Binance either';"
+  ++ "document.getElementById('fetchBtn').disabled=false;return;}"
+  ++ "showDaily(acc);document.getElementById('status').textContent='(via Binance)';"
+  ++ "document.getElementById('fetchBtn').disabled=false;return;}"
+  ++ "var chunk=klines.map(function(k){return [new Date(k[0]).toISOString().slice(0,10),parseFloat(k[4])]});"
+  ++ "var all=acc.concat(chunk);"
+  ++ "if(klines.length<1000){showDaily(all);document.getElementById('status').textContent='(via Binance)';"
+  ++ "document.getElementById('fetchBtn').disabled=false;}"
+  ++ "else{var lastTs=klines[klines.length-1][0]+86400000;"
+  ++ "document.getElementById('status').textContent='Fetching from Binance ('+all.length+' days)...';"
+  ++ "fetchBinanceChunks(lastTs,toMs,all);}})"
+  ++ ".catch(function(e){document.getElementById('status').textContent='Both APIs failed: '+e;"
+  ++ "document.getElementById('fetchBtn').disabled=false;});}"
+
+  ++ "function fetchBinance(fromMs,toMs){"
+  ++ "document.getElementById('status').textContent='CoinGecko failed, trying Binance...';"
+  ++ "fetchBinanceChunks(fromMs,toMs,[]);}"
 
   ++ "function fetchRange(){"
   ++ "var f=document.getElementById('fromDate').value;"
