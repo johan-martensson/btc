@@ -9,7 +9,10 @@ btcprice: btcprice.hs
 btcgui: btcgui.hs
 	$(GHC) $(GHCFLAGS) -o $@ $<
 
+open-gui:
+	open btcgui.html
+
 clean:
 	rm -f btcprice btcgui *.o *.hi
 
-.PHONY: all clean
+.PHONY: all clean open-gui

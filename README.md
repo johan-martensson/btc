@@ -57,7 +57,16 @@ Date        Price (USD)     Volume (USD)          Change
   Avg Vol:    $45,102,190,727
 ```
 
-### GUI (`btcgui`)
+### Standalone GUI (`btcgui.html`)
+
+```bash
+open btcgui.html     # macOS
+# or: make open-gui
+```
+
+A standalone HTML file that runs entirely in the browser — no compilation needed. Just open it directly. It fetches current price and historical data client-side on page load (default: last 90 days, 3M highlighted).
+
+### GUI (`btcgui`) — Haskell binary
 
 ```bash
 # Default: last 90 days
@@ -67,7 +76,7 @@ Date        Price (USD)     Volume (USD)          Change
 ./btcgui 2025-10-01 2026-01-01
 ```
 
-Generates an interactive HTML dashboard and opens it in your browser. Features:
+Compiles with GHC. Fetches initial data server-side, generates an HTML dashboard, and opens it in the browser. Features (shared with `btcgui.html`):
 
 - Current price (USD, EUR, GBP) and 24h trading volume
 - Preset range buttons: **1D**, **1W**, **1M**, **3M**, **1Y**, **All**
