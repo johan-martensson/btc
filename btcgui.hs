@@ -53,35 +53,37 @@ openBrowser url = do
 -- API
 -------------------------------------------------------------------------------
 
-type DailyEntry = (Day, Double)
+type DailyEntry = (Day, Double, Double)  -- (date, price, volume)
 
-fetchCurrentPrice :: IO (Maybe (String, String, String))
+fetchCurrentPrice :: IO (Maybe (String, String, String, String))
 fetchCurrentPrice = do
   result <- fetchCurrentCoinGecko
   case result of
     Just x  -> return (Just x)
     Nothing -> fetchCurrentBinance
 
-fetchCurrentCoinGecko :: IO (Maybe (String, String, String))
+fetchCurrentCoinGecko :: IO (Maybe (String, String, String, String))
 fetchCurrentCoinGecko = do
   response <- readCommand
-    "curl -s --max-time 5 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur,gbp'"
+    "curl -s --max-time 5 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur,gbp&include_24hr_vol=true'"
   return $ do
     usd <- extractJsonValue "usd" response
     eur <- extractJsonValue "eur" response
     gbp <- extractJsonValue "gbp" response
-    Just (usd, eur, gbp)
+    vol <- extractJsonValue "usd_24h_vol" response
+    Just (usd, eur, gbp, vol)
 
-fetchCurrentBinance :: IO (Maybe (String, String, String))
+fetchCurrentBinance :: IO (Maybe (String, String, String, String))
 fetchCurrentBinance = do
-  rUsd <- readCommand "curl -s --max-time 5 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'"
+  rUsd <- readCommand "curl -s --max-time 5 'https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT'"
   rEur <- readCommand "curl -s --max-time 5 'https://api.binance.com/api/v3/ticker/price?symbol=BTCEUR'"
   rGbp <- readCommand "curl -s --max-time 5 'https://api.binance.com/api/v3/ticker/price?symbol=BTCGBP'"
   return $ do
-    usd <- extractQuotedValue "price" rUsd
+    usd <- extractQuotedValue "lastPrice" rUsd
     eur <- extractQuotedValue "price" rEur
     gbp <- extractQuotedValue "price" rGbp
-    Just (trimZeros usd, trimZeros eur, trimZeros gbp)
+    vol <- extractQuotedValue "quoteVolume" rUsd
+    Just (trimZeros usd, trimZeros eur, trimZeros gbp, trimZeros vol)
 
 fetchHistoricalPrices :: Day -> Day -> IO (Either String [DailyEntry])
 fetchHistoricalPrices fromDay toDay = do
@@ -103,8 +105,11 @@ fetchHistCoinGecko fromDay toDay = do
             ++ "&to=" ++ show toEpoch ++ "'"
   response <- readCommand url
   case parsePriceArray response of
-    Just entries@(_:_) -> return $ Just (downsampleDaily entries)
-    _                  -> return Nothing
+    Just entries@(_:_) ->
+      let volumes = parseVolumeArray response
+          daily   = downsampleDaily entries volumes
+      in  return $ Just daily
+    _ -> return Nothing
 
 fetchHistBinance :: Day -> Day -> IO (Maybe [DailyEntry])
 fetchHistBinance fromDay toDay = do
@@ -125,7 +130,7 @@ fetchBinChunks fromMs toMs
       case entries of
         [] -> return []
         _  -> do
-          let lastDay    = fst (last entries)
+          let (lastDay, _, _) = last entries
               nextFromMs = (dayToEpoch lastDay + 86400) * 1000
           if nextFromMs >= toMs || length entries < 1000
             then return entries
@@ -133,6 +138,8 @@ fetchBinChunks fromMs toMs
               rest <- fetchBinChunks nextFromMs toMs
               return (entries ++ rest)
 
+-- Parse Binance kline array: [[ts,"o","h","l","c","vol",closeTime,"quoteVol",...], ...]
+-- Extracts close price (index 4) and quoteAssetVolume (index 7)
 parseBinanceKlines :: String -> [DailyEntry]
 parseBinanceKlines s = case dropWhile (/= '[') s of
   '[':'[':rest -> parseKline rest
@@ -141,15 +148,22 @@ parseBinanceKlines s = case dropWhile (/= '[') s of
     parseKline r =
       case reads r :: [(Double, String)] of
         [(ts, r1)] ->
-          case skipQ (dropC r1) of
-            Just r2 -> case skipQ (dropC r2) of
-              Just r3 -> case skipQ (dropC r3) of
-                Just r4 -> case readQ (dropC r4) of
-                  Just (closeStr, _) ->
-                    case readMaybe' closeStr of
-                      Just price ->
-                        let day = utctDay (msToUTC ts)
-                        in  (day, price) : parseKline (skipNext r)
+          case skipQ (dropC r1) of                        -- skip open (1)
+            Just r2 -> case skipQ (dropC r2) of           -- skip high (2)
+              Just r3 -> case skipQ (dropC r3) of         -- skip low (3)
+                Just r4 -> case readQ (dropC r4) of       -- read close (4)
+                  Just (closeStr, r5) ->
+                    case readQ (dropC r5) of              -- skip volume (5)
+                      Just (_, r6) -> case skipNum (dropC r6) of  -- skip closeTime (6)
+                        Just r7 -> case readQ (dropC r7) of      -- read quoteAssetVolume (7)
+                          Just (volStr, _) ->
+                            case (readMaybe' closeStr, readMaybe' volStr) of
+                              (Just price, Just vol) ->
+                                let day = utctDay (msToUTC ts)
+                                in  (day, price, vol) : parseKline (skipNext r)
+                              _ -> parseKline (skipNext r)
+                          _ -> parseKline (skipNext r)
+                        _ -> parseKline (skipNext r)
                       _ -> parseKline (skipNext r)
                   _ -> parseKline (skipNext r)
                 _ -> parseKline (skipNext r)
@@ -163,6 +177,11 @@ parseBinanceKlines s = case dropWhile (/= '[') s of
     readQ str = case dropWhile (/= '"') str of
       '"':rest -> let (v, rest2) = span (/= '"') rest in Just (v, drop 1 rest2)
       _        -> Nothing
+    skipNum str =
+      let trimmed = dropWhile isSpace str
+      in  case reads trimmed :: [(Double, String)] of
+            [(_,rest)] -> Just rest
+            _          -> Nothing
     skipNext str = case dropWhile (/= '[') str of
       '[':rest -> rest
       _        -> ""
@@ -197,6 +216,12 @@ parsePriceArray :: String -> Maybe [(Double, Double)]
 parsePriceArray json = do
   rest <- scanPrefix "\"prices\":[" json
   Just (parsePairs rest)
+
+parseVolumeArray :: String -> [(Double, Double)]
+parseVolumeArray json =
+  case scanPrefix "\"total_volumes\":[" json of
+    Just rest -> parsePairs rest
+    Nothing   -> []
 
 scanPrefix :: String -> String -> Maybe String
 scanPrefix [] ys         = Just ys
@@ -239,11 +264,21 @@ dayToEpoch d = round $ utcTimeToPOSIXSeconds (UTCTime d 0)
 showDay :: Day -> String
 showDay = formatTime defaultTimeLocale "%Y-%m-%d"
 
-downsampleDaily :: [(Double, Double)] -> [DailyEntry]
-downsampleDaily entries =
-  let withDays = map (\(ts, p) -> (utctDay (msToUTC ts), p)) entries
-      grouped  = groupBy (\a b -> fst a == fst b) withDays
-  in  map (\grp -> (fst (head grp), snd (head grp))) grouped
+downsampleDaily :: [(Double, Double)] -> [(Double, Double)] -> [DailyEntry]
+downsampleDaily priceEntries volumeEntries =
+  let priceDays = map (\(ts, p) -> (utctDay (msToUTC ts), p)) priceEntries
+      volMap    = map (\(ts, v) -> (utctDay (msToUTC ts), v)) volumeEntries
+      grouped   = groupBy (\a b -> fst a == fst b) priceDays
+      dailyP    = map (\grp -> (fst (head grp), snd (head grp))) grouped
+      volGrouped = groupBy (\a b -> fst a == fst b) volMap
+      dailyV    = map (\grp -> (fst (head grp), snd (head grp))) volGrouped
+  in  map (\(d, p) -> (d, p, lookupVol d dailyV)) dailyP
+
+lookupVol :: Day -> [(Day, Double)] -> Double
+lookupVol _ [] = 0
+lookupVol d ((d',v):rest)
+  | d == d'   = v
+  | otherwise = lookupVol d rest
 
 msToUTC :: Double -> UTCTime
 msToUTC ms = posixSecondsToUTCTime (realToFrac (ms / 1000))
@@ -254,6 +289,9 @@ msToUTC ms = posixSecondsToUTCTime (realToFrac (ms / 1000))
 
 showPrice :: Double -> String
 showPrice p = printf "%.2f" p
+
+showVolume :: Double -> String
+showVolume v = printf "%.0f" v
 
 formatNum :: String -> String
 formatNum s =
@@ -286,9 +324,9 @@ main = do
 
   -- Fetch current price
   currentResult <- fetchCurrentPrice
-  let (curUsd, curEur, curGbp) = case currentResult of
+  let (curUsd, curEur, curGbp, curVol) = case currentResult of
         Just x  -> x
-        Nothing -> ("--", "--", "--")
+        Nothing -> ("--", "--", "--", "--")
 
   -- Fetch historical prices
   case (parseDay fromStr, parseDay toStr) of
@@ -299,7 +337,7 @@ main = do
           putStrLn $ "Error: " ++ err
         Right entries -> do
           let htmlPath = "/tmp/btcprice.html"
-          writeFile htmlPath (generateHtml curUsd curEur curGbp entries)
+          writeFile htmlPath (generateHtml curUsd curEur curGbp curVol entries)
           putStrLn $ "Opening " ++ htmlPath ++ " in browser..."
           openBrowser htmlPath
     _ -> putStrLn "Error: invalid or reversed date range. Use: btcgui YYYY-MM-DD YYYY-MM-DD"
@@ -308,20 +346,26 @@ main = do
 -- HTML generation
 -------------------------------------------------------------------------------
 
-generateHtml :: String -> String -> String -> [DailyEntry] -> String
-generateHtml curUsd curEur curGbp entries =
-  let prices    = map snd entries
+generateHtml :: String -> String -> String -> String -> [DailyEntry] -> String
+generateHtml curUsd curEur curGbp curVol entries =
+  let prices    = map (\(_,p,_) -> p) entries
+      volumes   = map (\(_,_,v) -> v) entries
       minP      = minimum prices
       maxP      = maximum prices
       avgP      = sum prices / fromIntegral (length prices)
-      firstP    = snd (head entries)
-      lastP     = snd (last entries)
+      totalVol  = sum volumes
+      avgVol    = totalVol / fromIntegral (length volumes)
+      (_,firstP,_) = head entries
+      (_,lastP,_)  = last entries
       changePct = (lastP - firstP) / firstP * 100 :: Double
-      firstDay  = showDay (fst (head entries))
-      lastDay   = showDay (fst (last entries))
+      (firstDayD,_,_) = head entries
+      (lastDayD,_,_)  = last entries
+      firstDay  = showDay firstDayD
+      lastDay   = showDay lastDayD
 
-      labelsJs  = "[" ++ joinWith "," (map (\(d,_) -> "\"" ++ showDay d ++ "\"") entries) ++ "]"
-      pricesJs  = "[" ++ joinWith "," (map (\(_,p) -> printf "%.2f" p) entries) ++ "]"
+      labelsJs  = "[" ++ joinWith "," (map (\(d,_,_) -> "\"" ++ showDay d ++ "\"") entries) ++ "]"
+      pricesJs  = "[" ++ joinWith "," (map (\(_,p,_) -> printf "%.2f" p) entries) ++ "]"
+      volumesJs = "[" ++ joinWith "," (map (\(_,_,v) -> printf "%.0f" v) entries) ++ "]"
 
       tableRows = concatMap makeRow (addChanges entries)
   in
@@ -340,6 +384,7 @@ generateHtml curUsd curEur curGbp entries =
   ++ priceChip "USD" "$" curUsd
   ++ priceChip "EUR" "\x20AC" curEur
   ++ priceChip "GBP" "\x00A3" curGbp
+  ++ volChip curVol
   ++ "</div></div>"
 
   -- Date range controls
@@ -370,6 +415,8 @@ generateHtml curUsd curEur curGbp entries =
   ++ statCard "Average" ("$" ++ formatNum (showPrice avgP)) ""
   ++ statCard "Change"  (printf "%+.2f%%" changePct)
               (if changePct >= 0 then "positive" else "negative")
+  ++ statCard "Avg Daily Vol" ("$" ++ formatNum (showVolume avgVol)) ""
+  ++ statCard "Total Vol" ("$" ++ formatNum (showVolume totalVol)) ""
   ++ "</div></div>"
 
   -- Chart
@@ -382,7 +429,7 @@ generateHtml curUsd curEur curGbp entries =
   ++ "<h2>Daily Prices</h2>"
   ++ "<div class='table-scroll'>"
   ++ "<table class='price-table'>"
-  ++ "<thead><tr><th>Date</th><th>Price (USD)</th><th>Change</th></tr></thead>"
+  ++ "<thead><tr><th>Date</th><th>Price (USD)</th><th>Volume (USD)</th><th>Change</th></tr></thead>"
   ++ "<tbody id='tableBody'>" ++ tableRows ++ "</tbody></table></div></div>"
 
   ++ "</div>"
@@ -394,31 +441,43 @@ generateHtml curUsd curEur curGbp entries =
   ++ "plugins:{legend:{labels:{color:'#ccc',font:{size:14}}},"
   ++ "tooltip:{backgroundColor:'#1e1e3a',titleColor:'#f7931a',bodyColor:'#e0e0e0',"
   ++ "borderColor:'#f7931a',borderWidth:1,padding:12,"
-  ++ "callbacks:{label:function(c){return ' $'+Number(c.raw).toLocaleString(undefined,"
-  ++ "{minimumFractionDigits:2,maximumFractionDigits:2})}}}},"
+  ++ "callbacks:{label:function(c){"
+  ++ "if(c.dataset.yAxisID==='y1')return ' Vol: $'+Number(c.raw).toLocaleString(undefined,{maximumFractionDigits:0});"
+  ++ "return ' $'+Number(c.raw).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});"
+  ++ "}}}},"
   ++ "scales:{x:{ticks:{color:'#888',maxTicksLimit:12,font:{size:11}},"
   ++ "grid:{color:'rgba(255,255,255,0.05)'}},"
-  ++ "y:{ticks:{color:'#888',font:{size:11},"
+  ++ "y:{position:'left',ticks:{color:'#888',font:{size:11},"
   ++ "callback:function(v){return '$'+v.toLocaleString()}},"
-  ++ "grid:{color:'rgba(255,255,255,0.05)'}}}};"
+  ++ "grid:{color:'rgba(255,255,255,0.05)'}},"
+  ++ "y1:{position:'right',ticks:{color:'#555',font:{size:10},"
+  ++ "callback:function(v){if(v>=1e9)return '$'+Math.round(v/1e9)+'B';"
+  ++ "if(v>=1e6)return '$'+Math.round(v/1e6)+'M';return '$'+v.toLocaleString()}},"
+  ++ "grid:{drawOnChartArea:false}}}};"
 
-  ++ "function renderChart(labels,data){"
+  ++ "function renderChart(labels,data,vols){"
   ++ "if(priceChart)priceChart.destroy();"
   ++ "var ctx=document.getElementById('priceChart').getContext('2d');"
-  ++ "priceChart=new Chart(ctx,{type:'line',data:{"
-  ++ "labels:labels,"
-  ++ "datasets:[{label:'BTC Price (USD)',data:data,"
+  ++ "var datasets=[{label:'BTC Price (USD)',data:data,type:'line',yAxisID:'y',"
   ++ "borderColor:'#f7931a',backgroundColor:'rgba(247,147,26,0.08)',"
   ++ "borderWidth:2,fill:true,tension:0.2,pointRadius:0,pointHitRadius:10,"
-  ++ "pointHoverRadius:5,pointHoverBackgroundColor:'#f7931a'}]},"
+  ++ "pointHoverRadius:5,pointHoverBackgroundColor:'#f7931a',order:1}];"
+  ++ "if(vols&&vols.length>0){datasets.push({label:'Volume (USD)',data:vols,type:'bar',yAxisID:'y1',"
+  ++ "backgroundColor:'rgba(78,186,234,0.25)',borderColor:'rgba(78,186,234,0.4)',"
+  ++ "borderWidth:1,order:2});}"
+  ++ "priceChart=new Chart(ctx,{type:'line',data:{labels:labels,datasets:datasets},"
   ++ "options:chartOpts});}"
 
   ++ "function fmt(n){return n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}"
+  ++ "function fmtVol(n){return Math.round(n).toLocaleString()}"
 
   ++ "function updateStats(daily){"
   ++ "var prices=daily.map(function(d){return d[1]});"
+  ++ "var vols=daily.map(function(d){return d[2]||0});"
   ++ "var hi=Math.max.apply(null,prices),lo=Math.min.apply(null,prices);"
   ++ "var avg=prices.reduce(function(a,b){return a+b},0)/prices.length;"
+  ++ "var totalVol=vols.reduce(function(a,b){return a+b},0);"
+  ++ "var avgVol=totalVol/vols.length;"
   ++ "var chg=(prices[prices.length-1]-prices[0])/prices[0]*100;"
   ++ "var cls=chg>=0?'positive':'negative';"
   ++ "document.getElementById('periodHeader').innerHTML="
@@ -426,7 +485,8 @@ generateHtml curUsd curEur curGbp entries =
   ++ "+'  <span class=\\'day-count\\'>('+daily.length+' days)</span>';"
   ++ "document.getElementById('statsGrid').innerHTML="
   ++ "sc('High','$'+fmt(hi),'')+sc('Low','$'+fmt(lo),'')"
-  ++ "+sc('Average','$'+fmt(avg),'')+sc('Change',(chg>=0?'+':'')+chg.toFixed(2)+'%',cls);}"
+  ++ "+sc('Average','$'+fmt(avg),'')+sc('Change',(chg>=0?'+':'')+chg.toFixed(2)+'%',cls)"
+  ++ "+sc('Avg Daily Vol','$'+fmtVol(avgVol),'')+sc('Total Vol','$'+fmtVol(totalVol),'');}"
 
   ++ "function sc(l,v,c){"
   ++ "return '<div class=\\'stat-card\\'><div class=\\'stat-label\\'>'+l+'</div>"
@@ -435,21 +495,25 @@ generateHtml curUsd curEur curGbp entries =
   ++ "function updateTable(daily){"
   ++ "var html='';var prev=null;"
   ++ "daily.forEach(function(d){"
-  ++ "var date=d[0],price=d[1],ch='',cls='';"
+  ++ "var date=d[0],price=d[1],vol=d[2]||0,ch='',cls='';"
   ++ "if(prev!==null){var pct=(price-prev)/prev*100;cls=pct>=0?'positive':'negative';"
   ++ "ch=(pct>=0?'+':'')+pct.toFixed(2)+'%';}"
   ++ "html+='<tr><td>'+date+'</td><td class=\\'price-cell\\'>$'+fmt(price)+'</td>"
+  ++ "<td class=\\'vol-cell\\'>$'+fmtVol(vol)+'</td>"
   ++ "<td class=\\''+cls+'\\'>'+ch+'</td></tr>';prev=price;});"
   ++ "document.getElementById('tableBody').innerHTML=html;}"
 
-  ++ "function downsample(prices){"
+  ++ "function downsample(prices,volumes){"
   ++ "var byDay={};prices.forEach(function(p){"
   ++ "var d=new Date(p[0]).toISOString().slice(0,10);"
-  ++ "if(!byDay[d])byDay[d]=p[1];});"
-  ++ "return Object.keys(byDay).sort().map(function(d){return [d,byDay[d]]});}"
+  ++ "if(!byDay[d])byDay[d]={price:p[1],vol:0};});"
+  ++ "if(volumes)volumes.forEach(function(v){"
+  ++ "var d=new Date(v[0]).toISOString().slice(0,10);"
+  ++ "if(byDay[d])byDay[d].vol=v[1];});"
+  ++ "return Object.keys(byDay).sort().map(function(d){return [d,byDay[d].price,byDay[d].vol]});}"
 
   ++ "function showDaily(daily){"
-  ++ "renderChart(daily.map(function(d){return d[0]}),daily.map(function(d){return d[1]}));"
+  ++ "renderChart(daily.map(function(d){return d[0]}),daily.map(function(d){return d[1]}),daily.map(function(d){return d[2]||0}));"
   ++ "updateStats(daily);updateTable(daily);}"
 
   ++ "function fetchBinanceChunks(fromMs,toMs,acc){"
@@ -465,7 +529,7 @@ generateHtml curUsd curEur curGbp entries =
   ++ "document.getElementById('fetchBtn').disabled=false;return;}"
   ++ "showDaily(acc);document.getElementById('status').textContent='(via Binance)';"
   ++ "document.getElementById('fetchBtn').disabled=false;return;}"
-  ++ "var chunk=klines.map(function(k){return [new Date(k[0]).toISOString().slice(0,10),parseFloat(k[4])]});"
+  ++ "var chunk=klines.map(function(k){return [new Date(k[0]).toISOString().slice(0,10),parseFloat(k[4]),parseFloat(k[7])]});"
   ++ "var all=acc.concat(chunk);"
   ++ "if(klines.length<1000){showDaily(all);document.getElementById('status').textContent='(via Binance)';"
   ++ "document.getElementById('fetchBtn').disabled=false;}"
@@ -494,7 +558,7 @@ generateHtml curUsd curEur curGbp entries =
   ++ ".then(function(r){if(!r.ok)throw new Error(r.status);return r.json()})"
   ++ ".then(function(j){"
   ++ "if(j.error){fetchBinance(fromMs,toMs);return;}"
-  ++ "var daily=downsample(j.prices);"
+  ++ "var daily=downsample(j.prices,j.total_volumes);"
   ++ "if(daily.length===0){fetchBinance(fromMs,toMs);return;}"
   ++ "showDaily(daily);document.getElementById('status').textContent='';"
   ++ "document.getElementById('fetchBtn').disabled=false;})"
@@ -509,7 +573,7 @@ generateHtml curUsd curEur curGbp entries =
   ++ "document.getElementById('toDate').value=to.toISOString().slice(0,10);"
   ++ "fetchRange();}"
 
-  ++ "renderChart(" ++ labelsJs ++ "," ++ pricesJs ++ ");"
+  ++ "renderChart(" ++ labelsJs ++ "," ++ pricesJs ++ "," ++ volumesJs ++ ");"
   ++ "</script>"
   ++ "</body></html>"
 
@@ -520,6 +584,16 @@ priceChip label symbol val =
   ++ "<span class='chip-value'>" ++ symbol ++ formatNum val ++ "</span>"
   ++ "</div>"
 
+volChip :: String -> String
+volChip val =
+     "<div class='price-chip vol-chip'>"
+  ++ "<span class='chip-label'>24h Volume</span>"
+  ++ "<span class='chip-value'>$" ++ formatNum (formatVolStr val) ++ "</span>"
+  ++ "</div>"
+
+formatVolStr :: String -> String
+formatVolStr s = let (whole, _) = break (== '.') s in whole
+
 statCard :: String -> String -> String -> String
 statCard label value cls =
      "<div class='stat-card'>"
@@ -527,20 +601,21 @@ statCard label value cls =
   ++ "<div class='stat-value " ++ cls ++ "'>" ++ value ++ "</div>"
   ++ "</div>"
 
-addChanges :: [DailyEntry] -> [(String, String, String, String)]
+addChanges :: [DailyEntry] -> [(String, String, String, String, String)]
 addChanges [] = []
-addChanges (e:es) = (showDay (fst e), "$" ++ formatNum (showPrice (snd e)), "", "") : go (snd e) es
+addChanges ((d,p,v):es) = (showDay d, "$" ++ formatNum (showPrice p), "$" ++ formatNum (showVolume v), "", "") : go p es
   where
-    go _    []         = []
-    go prev ((d,p):xs) =
-      let pct = (p - prev) / prev * 100 :: Double
+    go _    []              = []
+    go prev ((d',p',v'):xs) =
+      let pct = (p' - prev) / prev * 100 :: Double
           cls = if pct >= 0 then "positive" else "negative"
-      in  (showDay d, "$" ++ formatNum (showPrice p), printf "%+.2f%%" pct, cls) : go p xs
+      in  (showDay d', "$" ++ formatNum (showPrice p'), "$" ++ formatNum (showVolume v'), printf "%+.2f%%" pct, cls) : go p' xs
 
-makeRow :: (String, String, String, String) -> String
-makeRow (date, price, change, cls) =
+makeRow :: (String, String, String, String, String) -> String
+makeRow (date, price, vol, change, cls) =
      "<tr><td>" ++ date ++ "</td>"
   ++ "<td class='price-cell'>" ++ price ++ "</td>"
+  ++ "<td class='vol-cell'>" ++ vol ++ "</td>"
   ++ "<td class='" ++ cls ++ "'>" ++ change ++ "</td></tr>"
 
 joinWith :: String -> [String] -> String
@@ -590,6 +665,8 @@ cssBlock = concat
   , ".price-table td{padding:7px 14px;border-bottom:1px solid #1a1a3e}"
   , ".price-table tr:hover{background:#0f3460}"
   , ".price-cell{font-variant-numeric:tabular-nums;font-weight:500}"
+  , ".vol-cell{font-variant-numeric:tabular-nums;color:#4ebaea;font-size:12px}"
+  , ".vol-chip .chip-value{color:#4ebaea}"
   , "::-webkit-scrollbar{width:8px}"
   , "::-webkit-scrollbar-track{background:#0f0f23;border-radius:4px}"
   , "::-webkit-scrollbar-thumb{background:#333;border-radius:4px}"
