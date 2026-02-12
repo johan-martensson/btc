@@ -64,6 +64,7 @@ Date        Price (USD)     Change
 Generates an interactive HTML dashboard and opens it in your browser. Features:
 
 - Current price (USD, EUR, GBP)
+- Preset range buttons: **1D**, **1W**, **1M**, **1Y**, **All**
 - Interactive date range picker — change the period and click **Fetch** to reload data live from the browser
 - Line chart with hover tooltips (Chart.js)
 - Period statistics (high, low, average, change %)
