@@ -40,19 +40,21 @@ Example output:
 ```
 === Bitcoin Daily Prices: 2025-12-01 to 2026-01-15 ===
 
-Date        Price (USD)     Change
-----------------------------------------
-2025-12-01  $90,359.87
-2025-12-02  $86,281.50      -4.51%
-2025-12-03  $91,320.08      +5.84%
+Date        Price (USD)     Volume (USD)          Change
+------------------------------------------------------------
+2025-12-01  $90,359.87      $37,064,742,380
+2025-12-02  $86,281.50      $21,163,124,465       -4.51%
+2025-12-03  $91,320.08      $50,705,395,176       +5.84%
 ...
-----------------------------------------
+------------------------------------------------------------
 
 === Summary ===
-  High:    $96,933.53
-  Low:     $85,450.33
-  Average: $89,832.48
-  Change:  +7.27%
+  High:       $96,933.53
+  Low:        $85,450.33
+  Average:    $89,832.48
+  Change:     +7.27%
+  Total Vol:  $1,443,270,103,254
+  Avg Vol:    $45,102,190,727
 ```
 
 ### GUI (`btcgui`)
@@ -67,20 +69,20 @@ Date        Price (USD)     Change
 
 Generates an interactive HTML dashboard and opens it in your browser. Features:
 
-- Current price (USD, EUR, GBP)
+- Current price (USD, EUR, GBP) and 24h trading volume
 - Preset range buttons: **1D**, **1W**, **1M**, **1Y**, **All**
 - Interactive date range picker — change the period and click **Fetch** to reload data live from the browser
-- Line chart with hover tooltips (Chart.js)
-- Period statistics (high, low, average, change %)
-- Scrollable daily price table with color-coded changes
+- Line chart with hover tooltips (Chart.js) and **volume bars** on secondary Y-axis
+- Period statistics (high, low, average, change %, avg daily volume, total volume)
+- Scrollable daily price table with volume and color-coded changes
 - Dark theme
 
 ## Data Sources
 
 Both tools try [CoinGecko](https://www.coingecko.com/en/api) first. If it fails (rate limit, timeout, or error), they automatically fall back to [Binance](https://developers.binance.com/docs/binance-spot-api-docs/rest-api) public endpoints. This applies to:
 
-- Current price fetching (CLI and GUI startup)
-- Historical data fetching (CLI and GUI startup)
+- Current price and 24h volume fetching (CLI and GUI startup)
+- Historical price and daily volume fetching (CLI and GUI startup)
 - Live date range updates in the GUI (client-side JavaScript)
 
 CoinGecko's free tier is limited to the last 365 days. The Binance fallback has no such limit — long ranges are fetched automatically via pagination (1000-day chunks).
