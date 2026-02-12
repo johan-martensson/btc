@@ -351,6 +351,13 @@ generateHtml curUsd curEur curGbp entries =
   ++ "<input type='date' id='toDate' value='" ++ lastDay ++ "' class='date-input'>"
   ++ "<button id='fetchBtn' class='btn' onclick='fetchRange()'>Fetch</button>"
   ++ "<span id='status' class='status'></span>"
+  ++ "</div>"
+  ++ "<div class='preset-bar'>"
+  ++ "<button class='preset' onclick='setPreset(1)'>1D</button>"
+  ++ "<button class='preset' onclick='setPreset(7)'>1W</button>"
+  ++ "<button class='preset' onclick='setPreset(30)'>1M</button>"
+  ++ "<button class='preset' onclick='setPreset(365)'>1Y</button>"
+  ++ "<button class='preset' onclick='setPreset(0)'>All</button>"
   ++ "</div></div>"
 
   -- Stats cards
@@ -494,6 +501,14 @@ generateHtml curUsd curEur curGbp entries =
   ++ ".catch(function(e){fetchBinance(fromMs,toMs);});}"
 
   -- Render initial chart with Haskell-provided data
+  ++ "function setPreset(days){"
+  ++ "var to=new Date();var from;"
+  ++ "if(days===0){from=new Date('2010-07-17');}else{"
+  ++ "from=new Date(to);from.setDate(from.getDate()-days);}"
+  ++ "document.getElementById('fromDate').value=from.toISOString().slice(0,10);"
+  ++ "document.getElementById('toDate').value=to.toISOString().slice(0,10);"
+  ++ "fetchRange();}"
+
   ++ "renderChart(" ++ labelsJs ++ "," ++ pricesJs ++ ");"
   ++ "</script>"
   ++ "</body></html>"
@@ -558,6 +573,9 @@ cssBlock = concat
   , ".btn:hover{background:#e8851a}"
   , ".btn:disabled{opacity:0.5;cursor:not-allowed}"
   , ".status{color:#f7931a;font-size:13px}"
+  , ".preset-bar{display:flex;gap:8px;margin-top:12px}"
+  , ".preset{background:#0f3460;color:#ccc;border:1px solid #333;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;transition:all 0.15s}"
+  , ".preset:hover{background:#f7931a;color:#fff;border-color:#f7931a}"
   , ".stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}"
   , ".stat-card{background:#0f3460;border-radius:10px;padding:18px;text-align:center}"
   , ".stat-label{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}"
