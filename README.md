@@ -1,6 +1,10 @@
 # btc
 
+[![GitHub](https://img.shields.io/github/license/johan-martensson/btc)](https://github.com/johan-martensson/btc)
+
 Bitcoin price tracker written in Haskell. Includes a CLI tool and a browser-based GUI dashboard.
+
+**Repository:** [github.com/johan-martensson/btc](https://github.com/johan-martensson/btc)
 
 Uses the [CoinGecko](https://www.coingecko.com/) free API with automatic fallback to [Binance](https://www.binance.com/) public API. No API keys required.
 
