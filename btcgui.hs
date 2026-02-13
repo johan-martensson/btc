@@ -343,8 +343,10 @@ main = do
   let today    = utctDay now
       defFrom  = showDay (addDays (-90) today)
       defTo    = showDay today
+      useHtml  = "--html" `elem` args
+      dateArgs = filter (/= "--html") args
 
-  (fromStr, toStr) <- case args of
+  (fromStr, toStr) <- case dateArgs of
     [f, t] -> return (f, t)
     _      -> return (defFrom, defTo)
 
@@ -365,11 +367,100 @@ main = do
         Left err -> do
           putStrLn $ "Error: " ++ err
         Right entries -> do
-          let htmlPath = "/tmp/btcprice.html"
-          writeFile htmlPath (generateHtml curUsd curEur curGbp curVol isHourly entries)
-          putStrLn $ "Opening " ++ htmlPath ++ " in browser..."
-          openBrowser htmlPath
-    _ -> putStrLn "Error: invalid or reversed date range. Use: btcgui YYYY-MM-DD YYYY-MM-DD"
+          if useHtml
+            then do
+              let htmlPath = "/tmp/btcprice.html"
+              writeFile htmlPath (generateHtml curUsd curEur curGbp curVol isHourly entries)
+              putStrLn $ "Opening " ++ htmlPath ++ " in browser..."
+              openBrowser htmlPath
+            else terminalRender curUsd curEur curGbp curVol isHourly entries
+    _ -> putStrLn "Error: invalid or reversed date range. Use: btcgui [--html] [YYYY-MM-DD YYYY-MM-DD]"
+
+-------------------------------------------------------------------------------
+-- Terminal rendering
+-------------------------------------------------------------------------------
+
+terminalRender :: String -> String -> String -> String -> Bool -> [PriceEntry] -> IO ()
+terminalRender curUsd curEur curGbp curVol isHourly entries = do
+  let prices    = map (\(_,p,_) -> p) entries
+      volumes   = map (\(_,_,v) -> v) entries
+      minP      = minimum prices
+      maxP      = maximum prices
+      avgP      = sum prices / fromIntegral (length prices)
+      totalVol  = sum volumes
+      avgVol    = totalVol / fromIntegral (length volumes)
+      (_,firstP,_) = head entries
+      (_,lastP,_)  = last entries
+      changePct = (lastP - firstP) / firstP * 100 :: Double
+      (firstLabel,_,_) = head entries
+      (lastLabel,_,_)  = last entries
+      unitLabel = if isHourly then "hours" else "days"
+      volLabel  = if isHourly then "Avg Hourly Vol" else "Avg Daily Vol"
+
+  putStrLn ""
+  putStrLn "=== Bitcoin Price Tracker ==="
+  putStrLn ""
+  putStrLn "  Current Price:"
+  putStrLn $ "    USD: $" ++ formatNum curUsd
+          ++ "    EUR: \x20AC" ++ formatNum curEur
+          ++ "    GBP: \x00A3" ++ formatNum curGbp
+  putStrLn $ "    24h Volume: $" ++ formatNum (formatVolStr curVol)
+  putStrLn ""
+  putStrLn $ "  Period: " ++ firstLabel ++ " -> " ++ lastLabel
+          ++ " (" ++ show (length entries) ++ " " ++ unitLabel ++ ")"
+  putStrLn $ "    High:    $" ++ formatNum (showPrice maxP)
+  putStrLn $ "    Low:     $" ++ formatNum (showPrice minP)
+  putStrLn $ "    Average: $" ++ formatNum (showPrice avgP)
+  printf      "    Change:  %+.2f%%\n" changePct
+  putStrLn $ "    " ++ volLabel ++ ": $" ++ formatNum (showVolume avgVol)
+  putStrLn $ "    Total Volume:  $" ++ formatNum (showVolume totalVol)
+  putStrLn ""
+  putStr $ asciiChart 70 20 entries
+  putStrLn ""
+
+asciiChart :: Int -> Int -> [PriceEntry] -> String
+asciiChart chartW chartH entries =
+  let prices   = map (\(_,p,_) -> p) entries
+      labels   = map (\(l,_,_) -> l) entries
+      n        = length prices
+      w        = min chartW n
+      sampled  = resampleList w prices
+      sampledL = resampleList w labels
+      lo       = minimum sampled
+      hi       = maximum sampled
+      pad      = max 0.01 ((hi - lo) * 0.03)
+      bottom   = lo - pad
+      top      = hi + pad
+      rng      = top - bottom
+      h        = chartH
+      rowOf p  = let r = round ((p - bottom) / rng * fromIntegral (h - 1)) :: Int
+                 in  min (h - 1) (max 0 r)
+      pRows    = map rowOf sampled
+      yLabel r = "$" ++ formatNum (showPrice (bottom + fromIntegral r / fromIntegral (h - 1) * rng))
+      yW       = 1 + maximum [length (yLabel r) | r <- [0, h `div` 4 .. h - 1]]
+      mkLine r = let lbl | r == h - 1 || r == 0 || r `mod` 5 == 0 =
+                             let s = yLabel r in replicate (yW - length s) ' ' ++ s
+                         | otherwise = replicate yW ' '
+                     cs  = [if pr == r then '*' else ' ' | pr <- pRows]
+                 in  lbl ++ "|" ++ cs
+      rows     = map mkLine [h - 1, h - 2 .. 0]
+      xAxis    = replicate yW ' ' ++ "+" ++ replicate w '-'
+      first10  = take 10 (head sampledL)
+      last10   = take 10 (last sampledL)
+      gap      = max 1 (w - length first10 - length last10)
+      dateLine = replicate (yW + 1) ' ' ++ first10 ++ replicate gap ' ' ++ last10
+  in  unlines (rows ++ [xAxis, dateLine])
+
+resampleList :: Int -> [a] -> [a]
+resampleList targetN xs
+  | len <= targetN = xs
+  | targetN <= 0   = []
+  | targetN == 1   = [head xs]
+  | otherwise      = [xs !! (i * (len - 1) `div` (targetN - 1)) | i <- [0 .. targetN - 1]]
+  where len = length xs
+
+formatVolStr :: String -> String
+formatVolStr s = let (whole, _) = break (== '.') s in whole
 
 -------------------------------------------------------------------------------
 -- HTML generation
@@ -772,9 +863,6 @@ volChip val =
   ++ "<span class='chip-label'>24h Volume</span>"
   ++ "<span class='chip-value'>$" ++ formatNum (formatVolStr val) ++ "</span>"
   ++ "</div>"
-
-formatVolStr :: String -> String
-formatVolStr s = let (whole, _) = break (== '.') s in whole
 
 statCard :: String -> String -> String -> String
 statCard label value cls =
