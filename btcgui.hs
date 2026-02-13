@@ -5,7 +5,7 @@ import Foreign.C.String      (CString, withCString, peekCString)
 import Foreign.C.Types       (CInt(..))
 import Foreign.Ptr            (Ptr, nullPtr)
 import Foreign.Marshal.Array  (allocaArray)
-import Data.Char              (isDigit, isSpace)
+import Data.Char              (isDigit, isSpace, toLower)
 import Data.List              (groupBy, isPrefixOf)
 import Data.Time              (Day, UTCTime(..), parseTimeM, defaultTimeLocale,
                                formatTime, utctDay, getCurrentTime, addDays, diffDays)
@@ -270,6 +270,17 @@ dayToEpoch d = round $ utcTimeToPOSIXSeconds (UTCTime d 0)
 showDay :: Day -> String
 showDay = formatTime defaultTimeLocale "%Y-%m-%d"
 
+parsePreset :: Day -> String -> Maybe (String, String)
+parsePreset today p = case map toLower p of
+  "1d"  -> Just (showDay (addDays (-1) today),   showDay today)
+  "1w"  -> Just (showDay (addDays (-7) today),   showDay today)
+  "1m"  -> Just (showDay (addDays (-30) today),  showDay today)
+  "3m"  -> Just (showDay (addDays (-90) today),  showDay today)
+  "6m"  -> Just (showDay (addDays (-180) today), showDay today)
+  "1y"  -> Just (showDay (addDays (-365) today), showDay today)
+  "all" -> Just ("2010-07-17",                   showDay today)
+  _     -> Nothing
+
 downsampleDaily :: [(Double, Double)] -> [(Double, Double)] -> [PriceEntry]
 downsampleDaily priceEntries volumeEntries =
   let priceDays = map (\(ts, p) -> (showDay (utctDay (msToUTC ts)), p)) priceEntries
@@ -348,6 +359,9 @@ main = do
 
   (fromStr, toStr) <- case dateArgs of
     [f, t] -> return (f, t)
+    [p]    -> case parsePreset today p of
+                Just (f, t) -> return (f, t)
+                Nothing     -> return (defFrom, defTo)
     _      -> return (defFrom, defTo)
 
   putStrLn $ "Fetching Bitcoin data for " ++ fromStr ++ " to " ++ toStr ++ " ..."
