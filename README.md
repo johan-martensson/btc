@@ -85,8 +85,9 @@ Compiles with GHC. Fetches initial data server-side, generates an HTML dashboard
 - **Bitcoin Power Law** overlay — support, near support (historical low), fair value, and resistance corridor lines with 20% forward projection
 - **Log Scale** toggle (Y-axis logarithmic)
 - **Log-Log** chart mode — days since genesis on X-axis (log) vs. price (log), where the power law appears as straight lines; tooltips show actual date, fair value, support, and resistance prices
-- Period statistics (high, low, average, change %, avg daily volume, total volume)
-- Scrollable daily price table with volume and color-coded changes
+- **Automatic hourly granularity** — ranges of 30 days or less (1D, 1W, 1M) show hourly data points; longer ranges show daily
+- Period statistics (high, low, average, change %, avg volume, total volume)
+- Scrollable price table with volume and color-coded changes
 - Dark theme
 
 ## Data Sources
