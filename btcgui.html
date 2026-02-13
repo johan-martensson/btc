@@ -41,6 +41,7 @@ canvas{margin:4px 0}
 .price-table{width:100%;border-collapse:collapse;font-size:13px}
 .price-table thead{position:sticky;top:0;background:#16213e;z-index:1}
 .price-table th{text-align:left;padding:10px 14px;border-bottom:2px solid #333;color:#888;font-weight:600}
+.sortable{cursor:pointer;user-select:none}.sortable:hover{color:#f7931a}
 .price-table td{padding:7px 14px;border-bottom:1px solid #1a1a3e}
 .price-table tr:hover{background:#0f3460}
 .price-cell{font-variant-numeric:tabular-nums;font-weight:500}
@@ -120,7 +121,7 @@ canvas{margin:4px 0}
     <h2>Daily Prices</h2>
     <div class="table-scroll">
       <table class="price-table">
-        <thead><tr><th>Date</th><th>Price (USD)</th><th>Volume (USD)</th><th>Change</th></tr></thead>
+        <thead><tr><th class="sortable" onclick="toggleDateSort()">Date <span id="sortArrow">&#9650;</span></th><th>Price (USD)</th><th>Volume (USD)</th><th>Change</th></tr></thead>
         <tbody id="tableBody"></tbody>
       </table>
     </div>
@@ -129,6 +130,7 @@ canvas{margin:4px 0}
 
 <script>
 var priceChart = null;
+var tableSortAsc = true;
 var showPL = false;
 var showLog = false;
 var showLL = false;
@@ -352,15 +354,37 @@ function sc(l, v, c) {
   return '<div class=\'stat-card\'><div class=\'stat-label\'>' + l + '</div><div class=\'stat-value ' + c + '\'>' + v + '</div></div>';
 }
 
+var curDaily = [];
+
 function updateTable(daily) {
+  curDaily = daily;
+  renderTable();
+}
+
+function renderTable() {
+  var rows = curDaily.slice();
+  if (!tableSortAsc) rows.reverse();
   var html = ''; var prev = null;
-  daily.forEach(function(d) {
+  // Change % is always relative to the chronologically previous day
+  var chronological = tableSortAsc ? rows : rows.slice().reverse();
+  var changeMap = {};
+  var cprev = null;
+  chronological.forEach(function(d) {
+    if (cprev !== null) { var pct = (d[1] - cprev) / cprev * 100; changeMap[d[0]] = pct; }
+    cprev = d[1];
+  });
+  rows.forEach(function(d) {
     var date = d[0], price = d[1], vol = d[2] || 0, ch = '', cls = '';
-    if (prev !== null) { var pct = (price - prev) / prev * 100; cls = pct >= 0 ? 'positive' : 'negative'; ch = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%'; }
+    if (changeMap[date] !== undefined) { var pct = changeMap[date]; cls = pct >= 0 ? 'positive' : 'negative'; ch = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%'; }
     html += '<tr><td>' + date + '</td><td class=\'price-cell\'>$' + fmt(price) + '</td><td class=\'vol-cell\'>$' + fmtVol(vol) + '</td><td class=\'' + cls + '\'>' + ch + '</td></tr>';
-    prev = price;
   });
   document.getElementById('tableBody').innerHTML = html;
+  document.getElementById('sortArrow').innerHTML = tableSortAsc ? '&#9650;' : '&#9660;';
+}
+
+function toggleDateSort() {
+  tableSortAsc = !tableSortAsc;
+  renderTable();
 }
 
 function downsample(prices, volumes) {
