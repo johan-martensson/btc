@@ -8,7 +8,8 @@ import Foreign.Marshal.Array  (allocaArray)
 import Data.Char              (isDigit, isSpace, toLower)
 import Data.List              (groupBy, isPrefixOf)
 import Data.Time              (Day, UTCTime(..), parseTimeM, defaultTimeLocale,
-                               formatTime, utctDay, getCurrentTime, addDays, diffDays)
+                               formatTime, utctDay, getCurrentTime, addDays, diffDays,
+                               fromGregorian)
 import Data.Time.Clock.POSIX  (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
 import System.Environment     (getArgs)
 import Text.Printf            (printf)
@@ -91,10 +92,96 @@ fetchHistoricalPrices isHourly fromDay toDay = do
   case result of
     Just entries -> return $ Right entries
     Nothing -> do
-      result2 <- fetchHistBinance isHourly fromDay toDay
+      result2 <- fetchHistWithFallback isHourly fromDay toDay
       case result2 of
         Just entries -> return $ Right entries
         Nothing      -> return $ Left "Could not fetch data from any source"
+
+-- Binance BTCUSDT started 2017-08-17; use Bitstamp for older data.
+binanceCutoff :: Day
+binanceCutoff = fromGregorian 2017 8 17
+
+-- Smart fetch: Bitstamp for pre-2017-08-17, Binance for the rest.
+fetchHistWithFallback :: Bool -> Day -> Day -> IO (Maybe [PriceEntry])
+fetchHistWithFallback isHourly fromDay toDay
+  | fromDay >= binanceCutoff = fetchHistBinance isHourly fromDay toDay
+  | otherwise = do
+      let bitstampTo = min toDay (pred binanceCutoff)
+      bsEntries  <- fetchBitstampEntries (dayToEpoch fromDay)
+                                         (dayToEpoch bitstampTo + 86400)
+      binEntries <- if toDay >= binanceCutoff
+                    then fetchBinChunks False (dayToEpoch binanceCutoff * 1000)
+                                              ((dayToEpoch toDay + 86400) * 1000)
+                    else return []
+      case bsEntries ++ binEntries of
+        [] -> return Nothing
+        xs -> return (Just xs)
+
+-- Bitstamp OHLC API: step=86400 (daily), limit=1000, epochs in seconds.
+-- Volume is in BTC; multiply by close price to get USD volume.
+-- NOTE: Bitstamp's 'start' is ignored; 'end' is inclusive and the API returns
+-- the last `limit` entries ending at `end`. So we set end = fromSec + 999*step.
+fetchBitstampEntries :: Integer -> Integer -> IO [PriceEntry]
+fetchBitstampEntries fromSec toSec
+  | fromSec >= toSec = return []
+  | otherwise = do
+      -- Bitstamp returns the last `limit` entries ending at `end` (inclusive).
+      -- Setting end = fromSec + 999*step means the 1000 entries start at fromSec.
+      let batchEnd = fromSec + 999 * 86400
+          url = "curl -s --max-time 10 'https://www.bitstamp.net/api/v2/ohlc/btcusd/"
+                ++ "?step=86400&limit=1000&start=" ++ show fromSec
+                ++ "&end=" ++ show batchEnd ++ "'"
+      response <- readCommand url
+      let allEntries = parseBitstampEntries response
+          entries = filter (\(l,_,_) ->
+                      case parseDay l of
+                        Just d  -> dayToEpoch d < toSec
+                        Nothing -> False) allEntries
+      case entries of
+        [] -> return []
+        _  -> do
+          let (lastLabel, _, _) = last entries
+              nextFromSec = case parseDay lastLabel of
+                Just d  -> dayToEpoch d + 86400
+                Nothing -> toSec
+          if nextFromSec >= toSec || length allEntries < 1000
+            then return entries
+            else do
+              rest <- fetchBitstampEntries nextFromSec toSec
+              return (entries ++ rest)
+
+-- Parse Bitstamp OHLC JSON:
+--   {"data":{"ohlc":[{"timestamp":"...","open":"...","high":"...","low":"...","close":"...","volume":"..."},...]},...}
+parseBitstampEntries :: String -> [PriceEntry]
+parseBitstampEntries s = case scanPrefix "\"ohlc\":[" s of
+  Nothing   -> []
+  Just rest -> parseItems rest
+  where
+    parseItems r = case dropWhile (\c -> c /= '{' && c /= ']') r of
+      '{':r' -> case parseEntry r' of
+        Just (entry, r'') -> entry : parseItems r''
+        Nothing           -> parseItems (dropWhile (/= '}') r')
+      _      -> []
+    parseEntry r =
+      let after = dropWhile (/= '}') r
+          r'    = case after of { '}':x -> x; _ -> "" }
+      in  case ( extractBitstampField "timestamp" r
+               , extractBitstampField "close"     r
+               , extractBitstampField "volume"    r ) of
+            (Just tsStr, Just closeStr, Just volStr) ->
+              case (readMaybe' tsStr, readMaybe' closeStr, readMaybe' volStr) of
+                (Just tsD, Just closeD, Just volD) ->
+                  let day   = utctDay (posixSecondsToUTCTime
+                                (realToFrac (round tsD :: Integer)))
+                      label = showDay day
+                  in  Just ((label, closeD, volD * closeD), r')
+                _ -> Nothing
+            _ -> Nothing
+
+extractBitstampField :: String -> String -> Maybe String
+extractBitstampField key s = case scanPrefix ("\"" ++ key ++ "\":\"") s of
+  Nothing   -> Nothing
+  Just rest -> Just (takeWhile (/= '"') rest)
 
 fetchHistCoinGecko :: Bool -> Day -> Day -> IO (Maybe [PriceEntry])
 fetchHistCoinGecko isHourly fromDay toDay = do

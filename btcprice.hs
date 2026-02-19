@@ -8,7 +8,7 @@ import Foreign.Marshal.Array (allocaArray)
 import Data.Char            (isDigit, isSpace)
 import Data.List            (groupBy, isPrefixOf)
 import Data.Time            (Day, UTCTime(..), parseTimeM, defaultTimeLocale,
-                             formatTime, utctDay)
+                             formatTime, utctDay, fromGregorian)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
 import System.Environment   (getArgs)
 import Text.Printf          (printf)
@@ -60,7 +60,8 @@ usage = unlines
   , "  btcprice FROM TO                  Daily price stats for date range"
   , ""
   , "  Dates must be YYYY-MM-DD, e.g.:   btcprice 2025-08-01 2025-10-15"
-  , "  CoinGecko limited to last 365 days; falls back to Binance for longer ranges."
+  , "  CoinGecko limited to last 365 days; falls back to Binance (from 2017-08-17)"
+  , "  and Bitstamp (from 2011-09) for older data."
   ]
 
 -------------------------------------------------------------------------------
@@ -124,8 +125,8 @@ historicalPrices fromStr toStr =
           case result of
             Just entries -> printDailyTable entries
             Nothing -> do
-              putStrLn "CoinGecko unavailable, trying Binance..."
-              result2 <- fetchHistoricalBinance fromDay toDay
+              putStrLn "CoinGecko unavailable, trying Binance/Bitstamp..."
+              result2 <- fetchHistoricalWithFallback fromDay toDay
               case result2 of
                 Just entries -> printDailyTable entries
                 Nothing -> putStrLn "Error: could not fetch historical data from any source"
@@ -174,6 +175,86 @@ fetchBinanceChunks fromMs toMs
             else do
               rest <- fetchBinanceChunks nextFromMs toMs
               return (entries ++ rest)
+
+-- Binance BTCUSDT started 2017-08-17; use Bitstamp for older data.
+binanceCutoff :: Day
+binanceCutoff = fromGregorian 2017 8 17
+
+-- Smart fetch: Bitstamp for pre-2017-08-17, Binance for the rest.
+fetchHistoricalWithFallback :: Day -> Day -> IO (Maybe [DailyEntry])
+fetchHistoricalWithFallback fromDay toDay
+  | fromDay >= binanceCutoff = fetchHistoricalBinance fromDay toDay
+  | otherwise = do
+      let bitstampTo = min toDay (pred binanceCutoff)
+      bsEntries  <- fetchBitstampChunks (dayToEpoch fromDay)
+                                        (dayToEpoch bitstampTo + 86400)
+      binEntries <- if toDay >= binanceCutoff
+                    then fetchBinanceChunks (dayToEpoch binanceCutoff * 1000)
+                                            ((dayToEpoch toDay + 86400) * 1000)
+                    else return []
+      case bsEntries ++ binEntries of
+        [] -> return Nothing
+        xs -> return (Just xs)
+
+-- Bitstamp OHLC API: step=86400, limit=1000, epochs in seconds.
+-- Volume field is in BTC; multiply by close price to get USD volume.
+-- NOTE: Bitstamp's 'start' is ignored; 'end' is inclusive and the API returns
+-- the last `limit` entries ending at `end`. So we set end = fromSec + 999*step.
+fetchBitstampChunks :: Integer -> Integer -> IO [DailyEntry]
+fetchBitstampChunks fromSec toSec
+  | fromSec >= toSec = return []
+  | otherwise = do
+      -- Bitstamp returns the last `limit` entries ending at `end` (inclusive).
+      -- Setting end = fromSec + 999*step means the 1000 entries start at fromSec.
+      let batchEnd = fromSec + 999 * 86400
+          url = "curl -s --max-time 10 'https://www.bitstamp.net/api/v2/ohlc/btcusd/"
+                ++ "?step=86400&limit=1000&start=" ++ show fromSec
+                ++ "&end=" ++ show batchEnd ++ "'"
+      response <- readCommand url
+      let allEntries = parseBitstampOHLC response
+          entries = filter (\(d,_,_) -> dayToEpoch d < toSec) allEntries
+      case entries of
+        [] -> return []
+        _  -> do
+          let (lastDay, _, _) = last entries
+              nextFromSec = dayToEpoch lastDay + 86400
+          if nextFromSec >= toSec || length allEntries < 1000
+            then return entries
+            else do
+              rest <- fetchBitstampChunks nextFromSec toSec
+              return (entries ++ rest)
+
+-- Parse Bitstamp OHLC JSON:
+--   {"data":{"ohlc":[{"timestamp":"...","open":"...","high":"...","low":"...","close":"...","volume":"..."},...]},...}
+parseBitstampOHLC :: String -> [DailyEntry]
+parseBitstampOHLC s = case scanPrefix "\"ohlc\":[" s of
+  Nothing   -> []
+  Just rest -> parseItems rest
+  where
+    parseItems r = case dropWhile (\c -> c /= '{' && c /= ']') r of
+      '{':r' -> case parseEntry r' of
+        Just (entry, r'') -> entry : parseItems r''
+        Nothing           -> parseItems (dropWhile (/= '}') r')
+      _      -> []
+    parseEntry r =
+      let after = dropWhile (/= '}') r
+          r'    = case after of { '}':x -> x; _ -> "" }
+      in  case ( extractBitstampField "timestamp" r
+               , extractBitstampField "close"     r
+               , extractBitstampField "volume"    r ) of
+            (Just tsStr, Just closeStr, Just volStr) ->
+              case (readMaybe' tsStr, readMaybe' closeStr, readMaybe' volStr) of
+                (Just tsD, Just closeD, Just volD) ->
+                  let day = utctDay (posixSecondsToUTCTime
+                              (realToFrac (round tsD :: Integer)))
+                  in  Just ((day, closeD, volD * closeD), r')
+                _ -> Nothing
+            _ -> Nothing
+
+extractBitstampField :: String -> String -> Maybe String
+extractBitstampField key s = case scanPrefix ("\"" ++ key ++ "\":\"") s of
+  Nothing   -> Nothing
+  Just rest -> Just (takeWhile (/= '"') rest)
 
 -- Parse Binance kline array: [[ts,"o","h","l","c","vol",closeTime,"quoteVol",...], ...]
 -- Extracts close price (index 4) and quoteAssetVolume (index 7)
