@@ -137,6 +137,7 @@ var showLL = false;
 var curLabels = [], curData = [], curVols = [];
 var curGranularity = 'daily';
 var GENESIS = new Date('2009-01-03T00:00:00Z').getTime();
+var BINANCE_CUTOFF_MS = new Date('2017-08-17T00:00:00Z').getTime();
 
 function getInterval(f, t) {
   var diffDays = (new Date(t + 'T00:00:00Z') - new Date(f + 'T00:00:00Z')) / 86400000;
@@ -321,8 +322,10 @@ function renderLogLog(ctx, labels, data) {
   });
   var datasets = [{
     label: 'BTC Price', data: priceXY, type: 'scatter',
-    borderColor: '#f7931a', backgroundColor: 'rgba(247,147,26,0.6)',
-    pointRadius: 2, pointHitRadius: 6, order: 1
+    showLine: true, tension: 0,
+    borderColor: '#f7931a', backgroundColor: 'rgba(247,147,26,0.08)',
+    borderWidth: 2, fill: true,
+    pointRadius: 0, pointHitRadius: 10, order: 1
   }];
   if (showPL) {
     var extLabels = extendLabels(labels, 0.2);
@@ -455,6 +458,65 @@ function fetchBinance(fromMs, toMs) {
   fetchBinanceChunks(fromMs, toMs, []);
 }
 
+// Bitstamp OHLC: step=86400, limit=1000.
+// API returns last `limit` entries ending at `end` (inclusive), ignoring `start`.
+// Setting end = fromSec + 999*step makes the batch start exactly at fromSec.
+function fetchBitstampChunks(fromSec, toSec, acc, onDone) {
+  if (fromSec >= toSec) { onDone(acc); return; }
+  var batchEnd = fromSec + 999 * 86400;
+  fetch('https://www.bitstamp.net/api/v2/ohlc/btcusd/?step=86400&limit=1000&start=' + fromSec + '&end=' + batchEnd)
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      var ohlc = j.data && j.data.ohlc ? j.data.ohlc : [];
+      if (ohlc.length === 0) { onDone(acc); return; }
+      var chunk = ohlc
+        .filter(function(c) { return parseInt(c.timestamp) < toSec; })
+        .map(function(c) {
+          var date = new Date(parseInt(c.timestamp) * 1000).toISOString().slice(0, 10);
+          var price = parseFloat(c.close);
+          var vol = parseFloat(c.volume) * price;  // volume is in BTC → convert to USD
+          return [date, price, vol];
+        });
+      var all = acc.concat(chunk);
+      document.getElementById('status').textContent = 'Fetching from Bitstamp (' + all.length + ' days)...';
+      var nextFrom = parseInt(ohlc[ohlc.length - 1].timestamp) + 86400;
+      if (nextFrom >= toSec) { onDone(all); }
+      else { fetchBitstampChunks(nextFrom, toSec, all, onDone); }
+    })
+    .catch(function() { onDone(acc); });
+}
+
+// Smart fallback: Bitstamp for pre-2017-08-17, Binance for the rest.
+function fetchWithFallback(fromMs, toMs) {
+  var fromSec = Math.floor(fromMs / 1000);
+  var cutoffSec = Math.floor(BINANCE_CUTOFF_MS / 1000);
+  if (fromSec >= cutoffSec) {
+    document.getElementById('status').textContent = 'CoinGecko failed, trying Binance...';
+    fetchBinanceChunks(fromMs, toMs, []);
+    return;
+  }
+  // Need Bitstamp for the pre-cutoff portion
+  document.getElementById('status').textContent = 'CoinGecko failed, trying Bitstamp...';
+  var bitstampToSec = Math.min(Math.floor(toMs / 1000), cutoffSec);
+  fetchBitstampChunks(fromSec, bitstampToSec, [], function(bsData) {
+    if (toMs <= BINANCE_CUTOFF_MS) {
+      // Pure Bitstamp range
+      if (bsData.length === 0) {
+        document.getElementById('status').textContent = 'No data available';
+        document.getElementById('fetchBtn').disabled = false;
+      } else {
+        showDaily(bsData);
+        document.getElementById('status').textContent = '(via Bitstamp)';
+        document.getElementById('fetchBtn').disabled = false;
+      }
+    } else {
+      // Mixed: Bitstamp pre-2017 + Binance post-2017
+      document.getElementById('status').textContent = 'Fetching from Binance...';
+      fetchBinanceChunks(BINANCE_CUTOFF_MS, toMs, bsData);
+    }
+  });
+}
+
 function fetchRange() {
   var f = document.getElementById('fromDate').value;
   var t = document.getElementById('toDate').value;
@@ -469,13 +531,13 @@ function fetchRange() {
   fetch('https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range?vs_currency=usd&from=' + from + '&to=' + to)
     .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function(j) {
-      if (j.error) { fetchBinance(fromMs, toMs); return; }
+      if (j.error) { fetchWithFallback(fromMs, toMs); return; }
       var daily = downsample(j.prices, j.total_volumes);
-      if (daily.length === 0) { fetchBinance(fromMs, toMs); return; }
+      if (daily.length === 0) { fetchWithFallback(fromMs, toMs); return; }
       showDaily(daily); document.getElementById('status').textContent = '';
       document.getElementById('fetchBtn').disabled = false;
     })
-    .catch(function(e) { fetchBinance(fromMs, toMs); });
+    .catch(function(e) { fetchWithFallback(fromMs, toMs); });
 }
 
 function clearRangeActive() { document.querySelectorAll('.range-btn').forEach(function(b) { b.classList.remove('active'); }); }
