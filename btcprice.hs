@@ -218,7 +218,7 @@ fetchBitstampChunks fromSec toSec
         _  -> do
           let (lastDay, _, _) = last entries
               nextFromSec = dayToEpoch lastDay + 86400
-          if nextFromSec >= toSec || length allEntries < 1000
+          if nextFromSec >= toSec
             then return entries
             else do
               rest <- fetchBitstampChunks nextFromSec toSec
