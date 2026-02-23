@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="author" content="Johan &amp; Claude">
 <title>Bitcoin Price Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
@@ -19,13 +20,13 @@ h2{color:#bbb;margin-bottom:14px;font-size:16px;font-weight:600}
 .chip-value{font-size:26px;font-weight:800;color:#fff}
 .range-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .range-label{color:#888;font-size:13px}
-.date-input{background:#0f3460;border:1px solid #333;color:#e0e0e0;padding:8px 12px;border-radius:8px;font-size:14px;font-family:inherit}
+.date-input{background:#0f3460;border:1px solid #333;color:#e0e0e0;padding:8px 12px;border-radius:8px;font-size:16px;font-family:inherit}
 .date-input::-webkit-calendar-picker-indicator{filter:invert(0.7)}
 .btn{background:#f7931a;color:#fff;border:none;padding:10px 22px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;font-family:inherit;transition:background 0.15s}
 .btn:hover{background:#e8851a}
 .btn:disabled{opacity:0.5;cursor:not-allowed}
 .status{color:#f7931a;font-size:13px}
-.preset-bar{display:flex;gap:8px;margin-top:12px}
+.preset-bar{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .preset{background:#0f3460;color:#ccc;border:1px solid #333;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;transition:all 0.15s}
 .preset:hover{background:#f7931a;color:#fff;border-color:#f7931a}
 .preset.active{background:#f7931a;color:#fff;border-color:#f7931a}
@@ -37,7 +38,7 @@ h2{color:#bbb;margin-bottom:14px;font-size:16px;font-weight:600}
 .positive{color:#2ecc71}
 .negative{color:#e74c3c}
 canvas{margin:4px 0}
-.table-scroll{max-height:500px;overflow-y:auto}
+.table-scroll{max-height:500px;overflow-y:auto;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .price-table{width:100%;border-collapse:collapse;font-size:13px}
 .price-table thead{position:sticky;top:0;background:#16213e;z-index:1}
 .price-table th{text-align:left;padding:10px 14px;border-bottom:2px solid #333;color:#888;font-weight:600}
@@ -52,11 +53,29 @@ canvas{margin:4px 0}
 ::-webkit-scrollbar-thumb{background:#333;border-radius:4px}
 .loading-pulse{animation:pulse 1.5s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+@media(max-width:600px){
+  h1{font-size:22px;margin-bottom:18px}
+  .container{padding:16px 12px}
+  .section{padding:14px;margin-bottom:12px}
+  .price-chip{flex:1 1 calc(50% - 10px);min-width:0;padding:12px 14px}
+  .chip-value{font-size:clamp(14px,4.5vw,26px)}
+  .range-bar{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center}
+  #fetchBtn,#status{grid-column:1/-1}
+  #fetchBtn{width:100%;padding:12px}
+  .preset{padding:9px 10px;font-size:12px;min-height:44px}
+  .preset-sep{display:none}
+  .stats-grid{grid-template-columns:repeat(2,1fr);gap:10px}
+  .stat-card{padding:12px 8px}
+  .stat-value{font-size:17px}
+  .price-table{min-width:380px;font-size:12px}
+  .price-table th,.price-table td{padding:9px 8px}
+}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>&#x20BF; Bitcoin Price Tracker</h1>
+  <p style="color:#f7931a;font-size:13px;margin-top:-20px;margin-bottom:20px">by Johan &amp; Claude</p>
 
   <!-- Current price card -->
   <div class="section">
@@ -198,7 +217,7 @@ function getChartOpts() {
     responsive: true,
     interaction: { mode: 'index', intersect: false },
     plugins: {
-      legend: { labels: { color: '#ccc', font: { size: 14 } } },
+      legend: { labels: { color: '#ccc', font: { size: window.innerWidth < 600 ? 11 : 14 }, boxWidth: window.innerWidth < 600 ? 14 : 40 } },
       tooltip: {
         backgroundColor: '#1e1e3a', titleColor: '#f7931a', bodyColor: '#e0e0e0',
         borderColor: '#f7931a', borderWidth: 1, padding: 12,
@@ -240,7 +259,7 @@ function getLogLogOpts() {
     responsive: true,
     interaction: { mode: 'x', intersect: false },
     plugins: {
-      legend: { labels: { color: '#ccc', font: { size: 14 } } },
+      legend: { labels: { color: '#ccc', font: { size: window.innerWidth < 600 ? 11 : 14 }, boxWidth: window.innerWidth < 600 ? 14 : 40 } },
       tooltip: {
         backgroundColor: '#1e1e3a', titleColor: '#f7931a', bodyColor: '#e0e0e0',
         borderColor: '#f7931a', borderWidth: 1, padding: 12,
